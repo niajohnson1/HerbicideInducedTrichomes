@@ -1,0 +1,451 @@
+---
+title: "Plasticity in Trichomes"
+output: html_document
+date: '2023-01-30'
+---
+
+```{r Load data}
+Gly2019 = read.csv("~/Desktop/Chapter 2/Glyphosate2019!_2.csv")
+Gly2019$POP <- as.factor(Gly2019$POP)
+Gly2019$ML <- as.factor(Gly2019$ML)
+Gly2019$TRT <- as.factor(Gly2019$TRT)
+Gly2019$BLK <- as.factor(Gly2019$BLK)
+Gly2019$ID <- as.factor(Gly2019$ID)
+Gly2019$Environment <- as.factor(Gly2019$Environment)
+```
+
+```{r Load packages}
+library(dplyr)
+library(plyr)
+library(PerformanceAnalytics)
+library(ggplot2)
+library(rcompanion)
+library(lme4)
+library(lmerTest)
+library(tidyverse)
+library(osmdata) # package for working with streets
+library(ggmap)
+library(rvest)
+library(remotes)
+
+```
+
+```{r Added Calculations}
+#Trichome Traits 
+Gly2019$Density = Gly2019$Branched + Gly2019$Single + Gly2019$Capitate + Gly2019$Peltate
+Gly2019$BranchedPer = Gly2019$Branched/ Gly2019$Density
+Gly2019$SinglePer = Gly2019$Single/ Gly2019$Density
+Gly2019$CapitatePer = Gly2019$Capitate/ Gly2019$Density
+Gly2019$PeltatePer = Gly2019$Peltate/ Gly2019$Density
+
+#Growth Rate
+Gly2019$GrowthRate <- (Gly2019$FinalHeight - Gly2019$Height1)/ 10 
+
+#Fitness
+Fitness_ <- ddply(Gly2019, .(TRT), summarise, 
+                       meanFitness=mean(Seed.Count, na.rm=TRUE))
+Gly2019 <- merge(Fitness_, Gly2019, by = "TRT")
+Gly2019$RelFitness = Gly2019$Seed.Count/ Gly2019$meanFitness 
+
+#Resistance Measurements 
+Gly2019$HerbRes2 = 1- Gly2019$PerDamage2
+
+```
+
+```{r remove Block effects}
+
+T0_2 = subset(Gly2019, TRT%in%c("0", "2")) #Field Trts
+
+#Trichomes
+T0_2$BranchedRes <- residuals(lm(BranchedPer ~ BLK, data = T0_2, na.action = na.exclude))
+T0_2$SingleRes <- residuals(lm(SinglePer ~ BLK, data = T0_2, na.action = na.exclude))
+T0_2$CapitateRes <- residuals(lm(CapitatePer ~ BLK, data = T0_2, na.action = na.exclude))
+T0_2$PeltateRes <- residuals(lm(PeltatePer ~ BLK, data = T0_2, na.action = na.exclude))
+T0_2$DensityRes <- residuals(lm(Density ~ BLK, data = T0_2, na.action = na.exclude))
+T0_2$GR <- residuals(lm(GrowthRate ~ BLK, data = T0_2, na.action = na.exclude))
+
+#Herbivory and Herbicide Resistance
+
+T0_2$HerbicideRes <- residuals(lm(HerbRes2 ~ BLK, data = T0_2, na.action = na.exclude))
+```
+
+```{r Subsets}
+T1 = subset(Gly2019, TRT%in%c("1")) #Growth Room
+
+T0 = subset(T0_2, TRT%in%c("0"))
+T2 = subset(T0_2, TRT%in%c("2"))
+```
+
+```{r Averaging Traits my ML}
+#Averages by Environment
+Growth_Room <- ddply(T1, .(ML), summarise, meanBranched=mean(BranchedPer, na.rm=TRUE),
+                      meanCapitate=mean(CapitatePer, na.rm=TRUE),
+                      meanDensity=mean(Density, na.rm=TRUE))
+
+Controls_Field<- ddply(T0, .(ML), summarise, meanBranched=mean(BranchedRes, na.rm=TRUE),
+                      meanCapitate=mean(CapitateRes, na.rm=TRUE),
+                      meanDensity=mean(DensityRes, na.rm=TRUE),
+                      meanRelFitness=mean(RelFitness, na.rm=TRUE), 
+                      meanGrowth=mean(GrowthRate, na.rm=TRUE))
+
+Herbicide_Field<- ddply(T2, .(ML), summarise, meanBranched=mean(BranchedRes, na.rm=TRUE),
+                      meanCapitate=mean(CapitateRes, na.rm=TRUE),
+                      meanDensity=mean(DensityRes, na.rm=TRUE), 
+                      meanRelFitness=mean(RelFitness, na.rm=TRUE), 
+                      meanGrowth=mean(GrowthRate, na.rm=TRUE),
+                      meanHerbicideRes=mean(HerbRes2, na.rm=TRUE))
+#Merge Field Averages
+PLastGly <- merge(Controls_Field, Herbicide_Field, by = "ML")
+
+#Calculate Plasticity in Trichomes
+PLastGly$Inducibility = abs(PLastGly$meanDensity.y -  PLastGly$meanDensity.x) #absolute phenotypic distance
+
+PLastGly$InducedBranched = (PLastGly$meanBranched.y -  PLastGly$meanBranched.x) 
+PLastGly$InducedCapitate = (PLastGly$meanCapitate.y -  PLastGly$meanCapitate.x) 
+PLastGly$InducedDensity = (PLastGly$meanDensity.y -  PLastGly$meanDensity.x) 
+
+#Merge Field and Growth Room Averages
+PLastGly <- merge(Growth_Room, PLastGly, by = "ML")
+
+#Subset by direction of induced trichomes 
+PLastGly1 = subset(PLastGly, InducedDensity >"0")
+PLastGly2 = subset(PLastGly, InducedDensity <"0")
+```
+
+```{r Trt Effects}
+#Linear Regression 
+mod1 <-lm(Density ~  Environment, data = Gly2019, na.action = na.exclude) 
+mod.av<- aov(mod1)
+summary (mod.av)
+TukeyHSD(mod.av, conf.level=.95)
+
+mod1 <-lm(BranchedPer ~  Environment, data = Gly2019, na.action = na.exclude) 
+mod.av<- aov(mod1)
+summary (mod.av)
+TukeyHSD(mod.av, conf.level=.95)
+
+mod1 <-lm(SinglePer ~  Environment, data = Gly2019, na.action = na.exclude) 
+mod.av<- aov(mod1)
+summary (mod.av)
+TukeyHSD(mod.av, conf.level=.95)
+
+mod1 <-lm(CapitatePer ~  Environment, data = Gly2019, na.action = na.exclude) 
+mod.av<- aov(mod1)
+summary (mod.av)
+TukeyHSD(mod.av, conf.level=.95)
+
+mod1 <-lm(PeltatePer ~  Environment, data = Gly2019, na.action = na.exclude) 
+mod.av<- aov(mod1)
+summary (mod.av)
+TukeyHSD(mod.av, conf.level=.95)
+```
+
+```{r Constitutive v Induced}
+#Absolute difference 
+cor.test(PLastGly$Inducibility, PLastGly$meanDensity)
+
+#By direction of induction
+cor.test(PLastGly1$InducedDensity, PLastGly1$meanDensity)
+cor.test(PLastGly2$InducedDensity, PLastGly2$meanDensity)
+```
+
+```{r Part 1 Figures}
+ggplot(PLastGly, aes(x=Inducibility, y=meanDensity)) +
+  geom_point(alpha = 0.3,  size = 2.5, position = position_jitter()) + stat_smooth(method = "lm", size = 1, se=FALSE,  fullrange = TRUE, col="black") + theme_classic(base_size = 15) + ylab("Constitutive Trichomes") + xlab ("Trichome Inducibility")
+
+```
+
+```{r Induced Trichomes and Herbicide Resistance }
+cor.test(PLastGly$meanHerbicideRes, PLastGly$InducedBranched)
+cor.test(PLastGly$meanHerbicideRes, PLastGly$InducedCapitate)
+cor.test(PLastGly$meanHerbicideRes, PLastGly$InducedDensity)
+
+
+```
+
+```{r Fitness Models}
+
+#Linear Regressions in Controls
+F_Fit <-lm(meanRelFitness.x ~ InducedDensity, data = PLastGly  , na.action = na.exclude)
+summary(F_Fit)
+anova(F_Fit)
+
+F_Fit <-lm(meanRelFitness.x ~ InducedCapitate, data = PLastGly  , na.action = na.exclude)
+summary(F_Fit)
+anova(F_Fit)
+
+F_Fit <-lm(meanRelFitness.x ~ InducedBranched, data = PLastGly  , na.action = na.exclude)
+summary(F_Fit)
+anova(F_Fit)
+
+
+#Linear Regressions in Herbicide
+F_Fit <-lm(meanRelFitness.y ~ InducedDensity, data = PLastGly  , na.action = na.exclude)
+summary(F_Fit)
+anova(F_Fit)
+
+F_Fit <-lm(meanRelFitness.y ~ InducedCapitate, data = PLastGly  , na.action = na.exclude)
+summary(F_Fit)
+anova(F_Fit)
+
+F_Fit <-lm(meanRelFitness.y ~ InducedBranched, data = PLastGly  , na.action = na.exclude)
+summary(F_Fit)
+anova(F_Fit)
+
+
+```
+
+```{r Genetic Variation for Trichome PLasticity}
+
+#Models
+F_Variation <-lmer(DensityRes ~  TRT + (1|ML) + (1|ML:TRT), data = T0_2, na.action = na.exclude)
+ranova(F_Variation)
+anova(F_Variation)
+
+F_Variation <-lmer(BranchedRes ~  TRT + (1|ML) + (1|ML:TRT), data = T0_2, na.action = na.exclude)
+ranova(F_Variation)
+anova(F_Variation)
+
+F_Variation <-lmer(CapitateRes ~  TRT + (1|ML) + (1|ML:TRT), data = T0_2, na.action = na.exclude)
+ranova(F_Variation)
+anova(F_Variation)
+
+F_Variation <-lmer(SingleRes ~  TRT + (1|ML) + (1|ML:TRT), data = T0_2, na.action = na.exclude)
+ranova(F_Variation)
+anova(F_Variation)
+
+F_Variation <-lmer(PeltateRes ~  TRT + (1|ML) + (1|ML:TRT), data = T0_2, na.action = na.exclude)
+ranova(F_Variation)
+anova(F_Variation)
+
+
+```
+
+```{r Part 2  Figures}
+GC_ <- ddply(T0_2, .(TRT, ML), summarise, 
+                      meanDensity=mean(Density, na.rm=TRUE),
+                      meanBranched=mean(BranchedPer, na.rm=TRUE),
+                      meanSingle=mean(SinglePer, na.rm=TRUE),
+                      meanCapitate=mean(CapitatePer, na.rm=TRUE),
+                      meanPeltate=mean(PeltatePer, na.rm=TRUE))
+GC_ <- na.omit(GC_)
+
+filtered_GC <- GC_ %>%
+  group_by(ML) %>%
+  filter(length(unique(TRT)) > 1) 
+
+ggplot(filtered_GC, aes(x= TRT, y = meanBranched, color = as.factor(ML), group = as.factor(ML))) +
+  geom_point(alpha = 0.4, size = 3) + 
+  geom_line() +
+  theme_bw(base_size = 15) +
+  xlab("Treatment") + 
+  ylab("Branched Trichomes") +
+  scale_x_discrete(labels=c("Control","Herbicide")) + 
+  theme(
+         axis.title.x = element_text(size = 16),
+         axis.text.x = element_text(size = 13),
+         axis.title.y = element_text(size = 16))
+
+ggplot(filtered_GC, aes(x= TRT, y = meanCapitate, color = as.factor(ML), group = as.factor(ML))) +
+  geom_point(alpha = 0.4, size = 3) + 
+  geom_line() +
+  theme_bw(base_size = 15) +
+  xlab("Treatment") + 
+  ylab("Capitate Trichomes") +
+  scale_x_discrete(labels=c("Control","Herbicide")) + 
+  theme(
+         axis.title.x = element_text(size = 16),
+         axis.text.x = element_text(size = 13),
+         axis.title.y = element_text(size = 16))
+ 
+ggplot(filtered_GC, aes(x= TRT, y = meanDensity, color = as.factor(ML), group = as.factor(ML))) +
+  geom_point(alpha = 0.4, size = 3) + 
+  geom_line() +
+  theme_bw(base_size = 15) +
+  xlab("Treatment") + 
+  ylab("Total Density") +
+  scale_x_discrete(labels=c("Control","Herbicide")) + 
+  theme(
+         axis.title.x = element_text(size = 16),
+         axis.text.x = element_text(size = 13),
+         axis.title.y = element_text(size = 16))
+
+#Treatment Effects
+ControlTRTs <- c("Control", "Herbicide")
+
+ggplot(T0_2, aes(x=TRT, y=BranchedPer, color = TRT, fill = TRT)) +
+geom_boxplot(alpha = 0.4) + geom_point(alpha = 0.4,  size = 1, position = position_jitter()) + theme_bw(base_size = 15) + xlab("Treatment") + ylab("Branched") + scale_fill_manual(values = c( "#f0d359", "#ff6600")) + scale_color_manual(values = c( "#f0d359", "#ff6600")) + scale_x_discrete(labels=ControlTRTs) + theme(
+    axis.title.x = element_text(size = 16),
+    axis.text.x = element_text(size = 13),
+    axis.title.y = element_text(size = 16))
+
+ggplot(T0_2, aes(x=TRT, y=CapitatePer, color = TRT, fill = TRT)) +
+geom_boxplot(alpha = 0.4) + geom_point(alpha = 0.4,  size = 1, position = position_jitter()) + theme_bw(base_size = 15) + xlab("Treatment") + ylab("Capitate") + scale_fill_manual(values = c( "#f0d359", "#ff6600")) + scale_color_manual(values = c( "#f0d359", "#ff6600")) + scale_x_discrete(labels=ControlTRTs) + theme(
+    axis.title.x = element_text(size = 16),
+    axis.text.x = element_text(size = 13),
+    axis.title.y = element_text(size = 16))
+
+ggplot(T0_2, aes(x=TRT, y=Density, color = TRT, fill = TRT)) +
+geom_boxplot(alpha = 0.4) + geom_point(alpha = 0.4,  size = 1, position = position_jitter()) + theme_bw(base_size = 15) + xlab("Treatment") + ylab("Density") + scale_fill_manual(values = c( "#f0d359", "#ff6600")) + scale_color_manual(values = c( "#f0d359", "#ff6600")) + scale_x_discrete(labels=ControlTRTs) + theme(
+    axis.title.x = element_text(size = 16),
+    axis.text.x = element_text(size = 13),
+    axis.title.y = element_text(size = 16))
+
+```
+
+```{Fitness Figures}
+#Without herbicide
+ggplot(PLastGly, aes(x=InducedBranched, y=meanRelFitness.y)) +
+  geom_point(alpha = 1,  size = 3, position = position_jitter()) + stat_smooth(method = "lm", size = 1, se=FALSE,  fullrange = TRUE, color = "black", linetype = "dashed") + theme_classic(base_size = 18) + ylab("Relative Fitness") + xlab("Induced Branched")  + scale_fill_manual(values = c("black")) + scale_color_manual(values = c("black")) 
+
+ggplot(PLastGly, aes(x=InducedCapitate, y=meanRelFitness.y)) +
+  geom_point(alpha = 1,  size = 3, position = position_jitter()) + stat_smooth(method = "lm", size = 1, se=FALSE,  fullrange = TRUE, color = "black", linetype = "solid") + theme_classic(base_size = 18) + ylab("Relative Fitness") + xlab("Induced Capitate")  + scale_fill_manual(values = c("black")) + scale_color_manual(values = c("black"))
+
+ggplot(PLastGly, aes(x=InducedDensity, y=meanRelFitness.y)) +
+  geom_point(alpha = 1,  size = 3, position = position_jitter(),  color = "black") + stat_smooth(method = "lm", size = 1, se=FALSE,  fullrange = TRUE, color = "black") + theme_classic(base_size = 18) + ylab("Relative Fitness") + xlab("Induced Density")
+
+#With herbicide
+ggplot(PLastGly, aes(x=InducedBranched, y=meanRelFitness.x)) +
+  geom_point(alpha = 1,  size = 3, position = position_jitter()) + stat_smooth(method = "lm", size = 1, se=FALSE,  fullrange = TRUE, color = "black", linetype = "dashed") + theme_classic(base_size = 18) + ylab("Relative Fitness") + xlab("Induced Branched")  + scale_fill_manual(values = c("black")) + scale_color_manual(values = c("black")) 
+
+ggplot(PLastGly, aes(x=InducedCapitate, y=meanRelFitness.x)) +
+  geom_point(alpha = 1,  size = 3, position = position_jitter()) + stat_smooth(method = "lm", size = 1, se=FALSE,  fullrange = TRUE, color = "black", linetype = "dashed") + theme_classic(base_size = 18) + ylab("Relative Fitness") + xlab("Induced Capitate")  + scale_fill_manual(values = c("black")) + scale_color_manual(values = c("black"))
+
+ggplot(PLastGly, aes(x=InducedDensity, y=meanRelFitness.x)) +
+  geom_point(alpha = 1,  size = 3, position = position_jitter(),  color = "black") + stat_smooth(method = "lm", size = 1, se=FALSE,  fullrange = TRUE, color = "black", linetype = "dashed") + theme_classic(base_size = 18) + ylab("Relative Fitness") + xlab("Induced Density")
+
+
+#Correlative Selection- Surfaces
+
+#Density in Herbicide
+m <- PLastGly[, c( "meanRelFitness.y", "InducedDensity", "meanGrowth.y")] 
+m2<-m[complete.cases(m), ]
+
+HHRes <- cbind(m2$InducedDensity, m2$meanGrowth.y)
+outHHRes <- Tps(HHRes, m2$meanRelFitness.y)
+
+#surface plot
+  FG.surface.In <- surface(outHHRes, type="p", xlab="Induced Total Density", ylab="Growth Rate", zlab="Relative Fitness", add.legend=FALSE, border = NA)
+
+#contour plot
+  FG.contour.In <- surface(outHHRes, type="C", xlab="Induced Total Density", ylab="Growth Rate", add.legend = TRUE)
+  
+#Branched in Absence
+m <- PLastGly[, c( "meanRelFitness.x", "InducedBranched", "meanGrowth.x")] 
+m2<-m[complete.cases(m), ]
+
+HHRes <- cbind(m2$InducedBranched, m2$meanGrowth.x)
+outHHRes <- Tps(HHRes, m2$meanRelFitness.x)
+
+#surface plot
+  FG.surface.In <- surface(outHHRes, type="p", xlab="Plasticity in Branched", ylab="Growth Rate", zlab="Relative Fitness", add.legend=FALSE, border = NA)
+
+#contour plot
+  FG.contour.In <- surface(outHHRes, type="C", xlab="Plasticity in Total Density", ylab="Growth Rate", add.legend = TRUE)
+
+  points(HHRes, pch = 15, col = m2$Col, cex = 1) 
+  
+  +  
+    legend("bottomright",height=4, legend=c(1:10),frame="grey", title="Relative Fitness",col =m2$Col ,pch=15 , cex=0.8)
+
+#autoclave
+xFGac <- cbind(mgdat2ac$HeightRGRC, mgdat2ac$DOFF)
+outFGac <- Tps(xFGac, mgdat2ac$RelFit)
+
+  #surface plot
+  FG.surface.Au <- surface(outFGac, type="p", xlab="Growth", ylab="Flowering Day", zlab="RelFit", add.legend = FALSE, col= pal, border = NA)
+  #contour plot
+  FG.contour.Au <- surface(outFGac, type="C", xlab="Growth", ylab="Flowering Day", zlab="RelFit", add.legend = TRUE, col = pal)
+  points(xFGac, pch = 2, col = "gray20", cex = .8)
+
+```
+
+```{Correlative Selection}
+
+F_Fit <-lm(meanRelFitness.x ~ InducedDensity*meanGrowth.x, data = PLastGly  , na.action = na.exclude)
+summary(F_Fit)
+
+
+F_Fit <-lm(meanRelFitness.x ~ InducedCapitate*meanGrowth.x, data = PLastGly  , na.action = na.exclude)
+summary(F_Fit)
+anova(F_Fit)
+
+F_Fit <-lm(meanRelFitness.x ~ InducedBranched*meanGrowth.x, data = PLastGly  , na.action = na.exclude)
+summary(F_Fit)
+anova(F_Fit)
+
+#Herbicide Trt
+F_Fit <-lm(meanRelFitness.y ~ InducedDensity*meanGrowth.y, data = PLastGly  , na.action = na.exclude)
+summary(F_Fit)
+anova(F_Fit) #Sig interaction 
+
+F_Fit <-lm(meanRelFitness.y ~ InducedBranched*meanGrowth.y, data = PLastGly  , na.action = na.exclude)
+summary(F_Fit)
+anova(F_Fit)
+
+F_Fit <-lm(meanRelFitness.y ~ InducedCapitate*meanGrowth.y, data = PLastGly  , na.action = na.exclude)
+summary(F_Fit)
+anova(F_Fit)
+
+```
+
+```{r Treatemnt Comparisons}
+#Figures 
+
+#ML effects
+T. <- GC2018 %>% select ("BranchedPer", "SinglePer", "CapitatePer", "PeltatePer", "Evenness", "Density", "LengthAvg") %>% na.omit(T0_2_) 
+
+colnames(T.) <- c("Branched","Single","Capitate","Peltate","Evenness","Density", "Length")
+
+ggplot(GC2018, aes(x=MLID, y=BranchedPer)) +
+  geom_boxplot(alpha = 0.3) + theme_bw(base_size = 15) + xlab("Maternal Line") + ylab("BranchedPer") 
+
+testRes = cor.mtest(T., conf.level=0.95)
+Phenotypes.cor <-corrplot(cor(T.), p.mat = testRes$p, is.corr = FALSE, type = "lower", insig = 'blank', addCoef.col = 'black', cl.cex = .7, number.cex = .75, tl.cex = .9, tl.col = 'black', tl.srt = 0, col = (pal(100)))
+
+
+#Field TRT Effects
+
+ggplot(Gly2019, aes(x=Environment, y=SinglePer, color = Environment, fill = Environment)) +
+  geom_boxplot(alpha = 0.4) + geom_point(alpha = 0.4,  size = 1, position = position_jitter()) + theme_bw(base_size = 20) + xlab("Environment") + ylab("Single Trichomes") + scale_fill_manual(values = c( "#8a79f4", "#bae179", "#f0d359")) + scale_color_manual(values = c( "#8a79f4", "#bae179", "#f0d359")) + scale_x_discrete(labels=c("Growth Room - Control","Field - Control", "Field - Herbicide"))
+
+ggplot(Gly2019, aes(x=Environment, y=BranchedPer, color = Environment, fill = Environment)) +
+  geom_boxplot(alpha = 0.4) + geom_point(alpha = 0.4,  size = 1, position = position_jitter()) + theme_bw(base_size = 15) + xlab("Environment") + ylab("Branched Trichomes") + scale_fill_manual(values = c( "#8a79f4", "#bae179", "#f0d359")) + scale_color_manual(values = c( "#8a79f4", "#bae179", "#f0d359")) + scale_x_discrete(labels=c("Growth Room - Control","Field - Control", "Field - Herbicide"))
+
+ggplot(Gly2019, aes(x=Environment, y=CapitatePer, color = Environment, fill = Environment)) +
+  geom_boxplot(alpha = 0.4) + geom_point(alpha = 0.4,  size = 1, position = position_jitter()) + theme_bw(base_size = 15) + xlab("Environment") + ylab("Capitate Trichomes") + scale_fill_manual(values = c( "#8a79f4", "#bae179", "#f0d359")) + scale_color_manual(values = c( "#8a79f4", "#bae179", "#f0d359")) + scale_x_discrete(labels=c("Growth Room - Control","Field - Control", "Field - Herbicide"))
+
+ggplot(Gly2019, aes(x=Environment, y=PeltatePer, color = Environment, fill = Environment)) +
+  geom_boxplot(alpha = 0.4) + geom_point(alpha = 0.4,  size = 1, position = position_jitter()) + theme_bw(base_size = 15) + xlab("Environment") + ylab("Peltate Trichomes") + scale_fill_manual(values = c( "#8a79f4", "#bae179", "#f0d359")) + scale_color_manual(values = c( "#8a79f4", "#bae179", "#f0d359")) + scale_x_discrete(labels=c("Growth Room - Control","Field - Control", "Field - Herbicide"))
+
+ggplot(Gly2019, aes(x=Environment, y=Density, color = Environment, fill = Environment)) +
+  geom_boxplot(alpha = 0.4) + geom_point(alpha = 0.4,  size = 1, position = position_jitter()) + theme_bw(base_size = 15) + xlab("Environment") + ylab("Density") + scale_fill_manual(values = c( "#8a79f4", "#bae179", "#f0d359")) + scale_color_manual(values = c( "#8a79f4", "#bae179", "#f0d359")) + scale_x_discrete(labels=c("Growth Room - Control","Field - Control", "Field - Herbicide"))
+
+
+
+
+
+#Growth Room vs Field 
+
+ggplot(T0_2, aes(x=TRT, y=Single, color = TRT, fill = TRT)) +
+  geom_boxplot(alpha = 0.4) + geom_point(alpha = 0.4,  size = 1, position = position_jitter()) + theme_bw(base_size = 15) + xlab("Treatment") + ylab("Single Trichomes") + scale_fill_manual(values = c( "#f0d359", "#ff6600")) + scale_color_manual(values = c( "#f0d359", "#ff6600"))+ scale_x_discrete(labels=c("Control","Herbicide"))
+
+ggplot(T0_2, aes(x=TRT, y=Branched, color = TRT, fill = TRT)) +
+  geom_boxplot(alpha = 0.4) + geom_point(alpha = 0.4,  size = 1, position = position_jitter()) + theme_bw(base_size = 15) + xlab("Treatment") + ylab("Branched Trichomes") + scale_fill_manual(values = c( "#f0d359", "#ff6600")) + scale_color_manual(values = c( "#f0d359", "#ff6600"))+ scale_x_discrete(labels=c("Control","Herbicide"))
+
+ggplot(T0_2, aes(x=TRT, y=Capitate, color = TRT, fill = TRT)) +
+  geom_boxplot(alpha = 0.4) + geom_point(alpha = 0.4,  size = 1, position = position_jitter()) + theme_bw(base_size = 15) + xlab("Treatment") + ylab("Capitate Trichomes") + scale_fill_manual(values = c( "#f0d359", "#ff6600")) + scale_color_manual(values = c( "#f0d359", "#ff6600"))+ scale_x_discrete(labels=c("Control","Herbicide"))
+
+ggplot(T0_2, aes(x=TRT, y=Peltate, color = TRT, fill = TRT)) +
+  geom_boxplot(alpha = 0.4) + geom_point(alpha = 0.4,  size = 1, position = position_jitter()) + theme_bw(base_size = 15) + xlab("Treatment") + ylab("Peltate Trichomes") + scale_fill_manual(values = c( "#f0d359", "#ff6600")) + scale_color_manual(values = c( "#f0d359", "#ff6600"))+ scale_x_discrete(labels=c("Control","Herbicide"))
+
+ggplot(T0_2, aes(x=TRT, y=Density, color = TRT, fill = TRT)) +
+  geom_boxplot(alpha = 0.4) + geom_point(alpha = 0.4,  size = 1, position = position_jitter()) + theme_bw(base_size = 15) + xlab("Treatment") + ylab("Density") + scale_fill_manual(values = c( "#f0d359", "#ff6600")) + scale_color_manual(values = c( "#f0d359", "#ff6600"))+ scale_x_discrete(labels=c("Control","Herbicide"))
+
+ggplot(T0_2, aes(x=TRT, y=Evenness, color = TRT, fill = TRT)) +
+  geom_boxplot(alpha = 0.4) + geom_point(alpha = 0.4,  size = 1, position = position_jitter()) + theme_bw(base_size = 15) + xlab("Treatment") + ylab("Evenness") + scale_fill_manual(values = c( "#f0d359", "#ff6600")) + scale_color_manual(values = c( "#f0d359", "#ff6600"))+ scale_x_discrete(labels=c("Control","Herbicide"))
+
+ggplot(T0_2, aes(x=TRT, y=LengthAvg, color = TRT, fill = TRT)) +
+  geom_boxplot(alpha = 0.4) + geom_point(alpha = 0.4,  size = 1, position = position_jitter()) + theme_bw(base_size = 15) + xlab("Treatment") + ylab("Length") + scale_fill_manual(values = c( "#f0d359", "#ff6600")) + scale_color_manual(values = c( "#f0d359", "#ff6600"))+ scale_x_discrete(labels=c("Control","Herbicide"))
+
+```
